@@ -2,7 +2,12 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from data_sources.registry import DatasetManifest, SOURCE_REGISTRY, approved_source
+from data_sources.registry import (
+    DatasetManifest,
+    SOURCE_REGISTRY,
+    approved_source,
+    assert_available_for_decision,
+)
 
 
 NOW = datetime(2026, 7, 20, tzinfo=timezone.utc)
@@ -45,6 +50,25 @@ def test_manifest_rejects_leaky_or_unverifiable_provenance():
             transform_version="raw-v1",
             data_mode="historical_replay",
         )
+
+
+def test_replay_refuses_a_snapshot_not_available_at_decision_time():
+    manifest = DatasetManifest.from_bytes(
+        dataset_id="weather-2024-01-forecast",
+        provider="Open-Meteo",
+        source_url="https://open-meteo.com/en/docs",
+        retrieved_at=NOW,
+        available_at=NOW - timedelta(minutes=5),
+        content=b"forecast",
+        transform_version="raw-v1",
+        data_mode="historical_replay",
+    )
+
+    assert_available_for_decision(manifest, NOW)
+    with pytest.raises(ValueError, match="not available"):
+        assert_available_for_decision(manifest, NOW - timedelta(minutes=10))
+    with pytest.raises(ValueError, match="timezone-aware"):
+        assert_available_for_decision(manifest, datetime(2026, 7, 20))
     with pytest.raises(ValueError, match="timezone-aware"):
         DatasetManifest.from_bytes(
             dataset_id="bad-time",

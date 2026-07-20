@@ -130,3 +130,18 @@ class DatasetManifest:
             transform_version=transform_version,
             data_mode=data_mode,
         )
+
+
+def assert_available_for_decision(manifest: DatasetManifest, decision_at: datetime) -> None:
+    """Reject information that was unavailable at a simulated decision point.
+
+    Historical replay code must call this before a dataset contributes any
+    feature.  This deliberately fails closed: a naive timestamp is not enough
+    evidence to establish that an input was known at the time.
+    """
+    if decision_at.tzinfo is None:
+        raise ValueError("decision_at must be timezone-aware")
+    if manifest.available_at > decision_at:
+        raise ValueError(
+            f"dataset {manifest.dataset_id!r} was not available at the replay decision time"
+        )
