@@ -66,9 +66,28 @@ def strategy_cards(grid: int, rain: int, safety_car: int, degradation: int) -> l
         primary_window = "Protect track position; switch only when crossover is clear"
     base = 58 + (10 if grid <= 5 else 0) - (5 if grid >= 12 else 0)
     return [
-        {"name": "Primary call", "tyres": primary, "window": primary_window, "chance": min(82, base + 10), "tone": "best balance", "why": "Balances tyre life with a pit window that avoids the busiest traffic."},
-        {"name": "Aggressive undercut", "tyres": "S → H" if not wet_risk else "S → I", "window": "L11–15", "chance": min(72, base), "tone": "position upside", "why": "Use only if clear air is available after the stop; the new-tyre pace can unlock an undercut."},
-        {"name": "Safety Car hedge", "tyres": "M → H", "window": "Wait for SC/VSC through L26" if sc_likely else "Do not wait beyond L25", "chance": min(68, base - 3 + (8 if sc_likely else 0)), "tone": "event dependent", "why": "Keeps a viable tyre set for a cheap stop if the race is neutralised."},
+        {
+            "name": "Primary call", "tyres": primary, "window": primary_window,
+            "chance": min(82, base + 10), "tone": "best balance",
+            "why": "Balances tyre life with a pit window that avoids the busiest traffic.",
+            "risk": "Loses its advantage if the car rejoins in a train.",
+            "trigger": "Switch if tyre fall-off appears earlier than the planned window.",
+        },
+        {
+            "name": "Aggressive undercut", "tyres": "S → H" if not wet_risk else "S → I",
+            "window": "L11–15", "chance": min(72, base), "tone": "position upside",
+            "why": "Use only if clear air is available after the stop; the new-tyre pace can unlock an undercut.",
+            "risk": "A short first stint creates traffic and tyre-life exposure.",
+            "trigger": "Abandon it if the out-lap rejoins behind slower traffic.",
+        },
+        {
+            "name": "Safety Car hedge", "tyres": "M → H",
+            "window": "Wait for SC/VSC through L26" if sc_likely else "Do not wait beyond L25",
+            "chance": min(68, base - 3 + (8 if sc_likely else 0)), "tone": "event dependent",
+            "why": "Keeps a viable tyre set for a cheap stop if the race is neutralised.",
+            "risk": "Waiting too long sacrifices pace if the race stays green.",
+            "trigger": "Pit on the normal window if no neutralisation appears by lap 25.",
+        },
     ]
 
 
@@ -100,6 +119,12 @@ st.markdown(
 with st.sidebar:
     st.markdown("## 🏁 Pitwall Planner")
     st.caption("Prototype · seed context only")
+    with st.expander("Build status", expanded=True):
+        st.progress(35, text="M1 · playable pre-race brief")
+        st.caption("✓ Offline seed profile")
+        st.caption("✓ Lineup and scenario controls")
+        st.caption("✓ Explainable plan comparison")
+        st.caption("Next: saved briefs and sourced historical replay")
     race_name = st.selectbox("Race weekend", list(RACES))
     st.divider()
     st.subheader("Your lineup")
@@ -165,7 +190,8 @@ for column, card in zip(st.columns(3), cards):
         st.markdown(
             f"<div class='strategy-card'><h3>{card['name']}</h3><span class='eyebrow'>{card['tone']}</span>"
             f"<div class='tyres'>{card['tyres']}</div><p><b>Pit window:</b> {card['window']}</p>"
-            f"<p>{card['why']}</p></div>",
+            f"<p>{card['why']}</p><p><b>Risk:</b> {card['risk']}</p>"
+            f"<p><b>Change trigger:</b> {card['trigger']}</p></div>",
             unsafe_allow_html=True,
         )
         st.progress(int(card["chance"]), text=f"Plan suitability: {card['chance']}%")
@@ -179,4 +205,9 @@ with st.expander("What would change this recommendation?"):
     )
 
 st.divider()
+st.warning(
+    "Strategy simulator — educational estimate, not official team strategy. "
+    "Recommendations use public data and scenario assumptions; live race events, tyre condition, "
+    "traffic, and team information can materially change the optimal call."
+)
 st.caption("Pitwall Planner is an enthusiast decision-support prototype. It does not use official F1 timing, live weather, or a predictive race model yet.")
