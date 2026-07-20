@@ -25,10 +25,10 @@ def initials(name: str) -> str:
     return "".join(part[0] for part in name.split()[:2]).upper()
 
 
-def first_lap(window: str, fallback: int) -> int:
-    """Extract a display marker from an engine-owned pit-window string."""
+def first_lap(window: str) -> int | None:
+    """Extract a numeric display marker without inventing a lap for a conditional call."""
     match = re.search(r"lap\s+(\d+)", window, flags=re.IGNORECASE)
-    return int(match.group(1)) if match else fallback
+    return int(match.group(1)) if match else None
 
 
 def plan_map(plans: tuple[StrategyPlan, ...], laps: int, focus_driver: str, team: str) -> str:
@@ -46,9 +46,14 @@ def plan_map(plans: tuple[StrategyPlan, ...], laps: int, focus_driver: str, team
     ]
     for index, plan in enumerate(plans):
         y = y_positions[index]
-        windows = [first_lap(window, 22 + index * 3) for window in plan.pit_windows]
+        windows = [first_lap(window) for window in plan.pit_windows]
         markers = []
         for marker_index, lap in enumerate(windows):
+            if lap is None:
+                markers.append(
+                    f"<text x='800' y='{y + 5}' text-anchor='end' fill='#f5c451' font-family='sans-serif' font-size='12'>Crossover decision</text>"
+                )
+                continue
             x = 145 + int(630 * min(lap, laps) / laps)
             markers.append(
                 f"<circle cx='{x}' cy='{y}' r='10' fill='{colour}' stroke='#f5c451' stroke-width='3'/>"
