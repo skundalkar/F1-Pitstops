@@ -46,6 +46,14 @@ def plan_map(plans: tuple[StrategyPlan, ...], laps: int, focus_driver: str, team
     ]
     for index, plan in enumerate(plans):
         y = y_positions[index]
+        if not plan.is_feasible:
+            svg.extend(
+                [
+                    f"<rect x='128' y='{y - 17}' width='697' height='34' rx='8' fill='#3c202b' stroke='#d46a7d' stroke-width='1'/>",
+                    f"<text x='145' y='{y + 5}' fill='#ffd9df' font-family='sans-serif' font-size='14' font-weight='700'>{html.escape(plan.name)} — unavailable with selected tyres / conditions</text>",
+                ]
+            )
+            continue
         windows = [first_lap(window) for window in plan.pit_windows]
         markers = []
         for marker_index, lap in enumerate(windows):
@@ -72,12 +80,19 @@ def plan_map(plans: tuple[StrategyPlan, ...], laps: int, focus_driver: str, team
 
 
 def plan_text(plan: StrategyPlan) -> str:
+    if not plan.is_feasible:
+        return f"{plan.name}: unavailable. {plan.feasibility_note} {plan.feasible_alternative}"
     stops = "; ".join(plan.pit_windows)
     tyres = " → ".join(plan.tyre_stints)
     return f"{plan.name}: {tyres}. Pit window: {stops}. Trigger: {plan.invalidating_trigger}"
 
 
 def plan_card(plan: StrategyPlan) -> None:
+    if not plan.is_feasible:
+        st.error(f"{plan.name} is not feasible", icon="⛔")
+        st.write(plan.feasibility_note)
+        st.success(plan.feasible_alternative, icon="✓")
+        return
     st.markdown(f"<div class='plan-card'><div class='eyebrow'>{html.escape(plan.name)}</div><div class='tyres'>{html.escape(' → '.join(plan.tyre_stints))}</div></div>", unsafe_allow_html=True)
     st.markdown("**Pit window**  ")
     st.write(" · ".join(plan.pit_windows))
@@ -121,9 +136,18 @@ with st.sidebar:
         st.stop()
     focus_driver = st.selectbox("Focus driver", lineup)
     focus = entries[focus_driver]
+    fixture_compounds = tuple(compound.value.title() for compound in focus.available_compounds)
     st.caption(f"Fixture grid: P{focus.grid_position} · {focus.team}")
+    st.caption(f"Usable fixture compounds: {' · '.join(fixture_compounds)}")
     st.divider()
     st.subheader("Race context")
+    condition_label = st.radio("Race condition", ("Auto", "Dry", "Wet"), horizontal=True)
+    race_condition = condition_label.lower()
+    starting_compound = st.selectbox(
+        "Starting tyre",
+        fixture_compounds,
+        help="Only compounds recorded for the selected fixture driver can be chosen.",
+    )
     traffic_label = st.selectbox("Expected traffic after a stop", ("Traffic ahead", "Neutral release", "Clean air"))
     traffic_context = {"Traffic ahead": "traffic", "Neutral release": "neutral", "Clean air": "clean_air"}[traffic_label]
     degradation = st.select_slider("Tyre degradation", options=("low", "medium", "high"), value="medium")
@@ -131,16 +155,29 @@ with st.sidebar:
     safety_car = st.slider("Safety Car chance", 0, 100, 35, format="%d%%")
     rain = st.slider("Rain likelihood", 0, 100, int(weekend.weather.rain_probability * 100), format="%d%%")
 
-inputs = StrategyInputs(
-    degradation=degradation,
-    safety_car_chance=safety_car / 100,
-    rain_likelihood=rain / 100,
-    pit_loss_seconds=weekend.pit_lane_loss_seconds,
-    track_position_emphasis=track_position / 100,
-    grid_position=focus.grid_position,
-    traffic_context=traffic_context,
+condition_compounds = {"dry": {"Soft", "Medium", "Hard"}, "wet": {"Intermediate", "Wet"}}
+configuration_issue = (
+    f"The fixture lists no {condition_label.lower()}-condition starting tyre for {focus_driver}. "
+    "Choose Auto/Dry or use a fixture with recorded Intermediate or Wet tyres."
+    if race_condition in condition_compounds and starting_compound not in condition_compounds[race_condition]
+    else None
 )
-plans = recommend_strategies(inputs)
+if configuration_issue:
+    plans: tuple[StrategyPlan, ...] = ()
+else:
+    inputs = StrategyInputs(
+        degradation=degradation,
+        safety_car_chance=safety_car / 100,
+        rain_likelihood=rain / 100,
+        pit_loss_seconds=weekend.pit_lane_loss_seconds,
+        track_position_emphasis=track_position / 100,
+        grid_position=focus.grid_position,
+        traffic_context=traffic_context,
+        race_condition=race_condition,
+        starting_compound=starting_compound,
+        usable_compounds=fixture_compounds,
+    )
+    plans = recommend_strategies(inputs)
 team_colour = neutral_team_colour(focus.team)
 
 st.markdown("<div class='hero'><div class='eyebrow'>Personal race brief</div><h1>Make the call. Understand the risk.</h1><p>Compare transparent pre-race plans for your selected driver, then see exactly what would make the pitwall change its mind.</p></div>", unsafe_allow_html=True)
@@ -164,25 +201,35 @@ with intro:
     st.write(f"Your plan is anchored to the fixture grid and a {weekend.pit_lane_loss_seconds:.1f}s green-flag pit loss. Adjust assumptions in the sidebar to replan.")
 with read:
     st.subheader("Pitwall read")
-    st.write(plans[1].why_changed)
+    st.write(plans[1].why_changed if plans else "A valid starting tyre and race condition are required before the strategy engine can make a call.")
 
 st.divider()
 st.subheader("Race Plan Map")
 st.caption("A simplified product schematic for comparing pit timing. It is original artwork, not circuit geometry, a logo, or an official graphic.")
-st.markdown(plan_map(plans, weekend.laps, focus_driver, focus.team), unsafe_allow_html=True)
-with st.expander("Text equivalent of the map", expanded=False):
-    st.markdown("\n\n".join(f"- {plan_text(plan)}" for plan in plans))
+if configuration_issue:
+    st.error(configuration_issue, icon="⛔")
+    st.caption("No normal-looking plan is shown when the selected fixture cannot support the requested race condition.")
+else:
+    st.markdown(plan_map(plans, weekend.laps, focus_driver, focus.team), unsafe_allow_html=True)
+    with st.expander("Text equivalent of the map", expanded=False):
+        st.markdown("\n\n".join(f"- {plan_text(plan)}" for plan in plans))
 
 st.divider()
 st.subheader("Plan comparison")
 st.caption("These are rule-based trade-offs. No plan is presented as a certainty or a win probability.")
-for column, plan in zip(st.columns(3), plans):
-    with column:
-        plan_card(plan)
+if configuration_issue:
+    st.info("Correct the race-condition or starting-tyre selection to generate a strategy comparison.")
+else:
+    for column, plan in zip(st.columns(3), plans):
+        with column:
+            plan_card(plan)
 
 with st.expander("What changed when you moved a scenario control?", expanded=True):
-    st.write(plans[1].why_changed)
-    st.caption("Every recommendation is recalculated from the visible fixture grid, pit loss, weather assumption, tyre-degradation setting, traffic context, and track-position priority.")
+    if configuration_issue:
+        st.write(configuration_issue)
+    else:
+        st.write(plans[1].why_changed)
+        st.caption("Every recommendation is recalculated from the visible fixture grid, recorded usable tyres, race condition, pit loss, weather assumption, tyre-degradation setting, traffic context, and track-position priority.")
 
 st.divider()
 st.warning(
