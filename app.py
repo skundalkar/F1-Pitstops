@@ -8,6 +8,7 @@ import re
 import streamlit as st
 
 from data_sources import load_offline_race_brief
+from pitwall.snapshot import RaceScenarioSnapshot, encode_snapshot
 from pitwall.strategy import StrategyInputs, StrategyPlan, recommend_strategies
 
 
@@ -103,6 +104,48 @@ def plan_card(plan: StrategyPlan) -> None:
     st.info(plan.invalidating_trigger, icon="🔄")
 
 
+def input_changes(baseline: StrategyInputs, current: StrategyInputs) -> list[str]:
+    """Translate snapshot differences into a short, decision-useful comparison."""
+    labels = {
+        "degradation": ("Tyre degradation", lambda value: value.capitalize()),
+        "safety_car_chance": ("Safety Car", lambda value: f"{value:.0%}"),
+        "rain_likelihood": ("Rain", lambda value: f"{value:.0%}"),
+        "track_position_emphasis": ("Track position", lambda value: f"{value:.0%}"),
+        "traffic_context": ("Traffic release", lambda value: value.replace("_", " ").title()),
+        "race_condition": ("Race condition", lambda value: value.title()),
+        "starting_compound": ("Starting tyre", str),
+        "grid_position": ("Fixture grid", lambda value: f"P{value}"),
+    }
+    changes = []
+    for field, (label, display) in labels.items():
+        before, after = getattr(baseline, field), getattr(current, field)
+        if before != after:
+            changes.append(f"**{label}:** {display(before)} → {display(after)}")
+    return changes
+
+
+def plan_changes(baseline: StrategyPlan, current: StrategyPlan) -> list[str]:
+    """Summarise only the recommendation changes that alter a pitwall decision."""
+    if baseline.is_feasible and not current.is_feasible:
+        return [f"Now unavailable — {current.feasibility_note}", current.feasible_alternative]
+    if not baseline.is_feasible and current.is_feasible:
+        return ["Now feasible with the current tyre and condition selection."]
+    if not baseline.is_feasible and not current.is_feasible:
+        return ["Still unavailable under both scenarios."]
+    changes = []
+    if baseline.tyre_stints != current.tyre_stints:
+        changes.append(f"Tyres: {' → '.join(baseline.tyre_stints)} → {' → '.join(current.tyre_stints)}")
+    if baseline.pit_windows != current.pit_windows:
+        changes.append(f"Pit window: {' · '.join(baseline.pit_windows)} → {' · '.join(current.pit_windows)}")
+    if baseline.tradeoffs != current.tradeoffs:
+        changes.append(f"Trade-off now: {current.tradeoffs[-1]}")
+    if baseline.invalidating_trigger != current.invalidating_trigger:
+        changes.append(f"Trigger now: {current.invalidating_trigger}")
+    if not changes:
+        changes.append("No call change — the same tyre sequence, window, and trigger still apply.")
+    return changes
+
+
 brief = load_offline_race_brief()
 weekend = brief.weekend
 entries = {entry.driver: entry for entry in weekend.drivers}
@@ -164,6 +207,7 @@ configuration_issue = (
 )
 if configuration_issue:
     plans: tuple[StrategyPlan, ...] = ()
+    current_snapshot: RaceScenarioSnapshot | None = None
 else:
     inputs = StrategyInputs(
         degradation=degradation,
@@ -178,7 +222,32 @@ else:
         usable_compounds=fixture_compounds,
     )
     plans = recommend_strategies(inputs)
+    current_snapshot = RaceScenarioSnapshot(
+        race=f"{weekend.season} {weekend.event_name}",
+        lineup=tuple(lineup),
+        focus_driver=focus_driver,
+        inputs=inputs,
+    )
 team_colour = neutral_team_colour(focus.team)
+
+with st.sidebar:
+    st.divider()
+    st.subheader("Scenario compare")
+    if current_snapshot is None:
+        st.caption("Correct the tyre/condition setup before pinning a baseline.")
+    else:
+        if st.button("Pin current as baseline", use_container_width=True, type="primary"):
+            st.session_state["baseline_snapshot"] = current_snapshot
+        st.download_button(
+            "Download current scenario JSON",
+            data=encode_snapshot(current_snapshot),
+            file_name="pitwall-scenario.json",
+            mime="application/json",
+            use_container_width=True,
+            help="Downloads a local deterministic snapshot. It does not create a hosted or shared link.",
+        )
+        if "baseline_snapshot" in st.session_state:
+            st.caption("A baseline is pinned for this browser session.")
 
 st.markdown("<div class='hero'><div class='eyebrow'>Personal race brief</div><h1>Make the call. Understand the risk.</h1><p>Compare transparent pre-race plans for your selected driver, then see exactly what would make the pitwall change its mind.</p></div>", unsafe_allow_html=True)
 st.markdown(
@@ -230,6 +299,39 @@ with st.expander("What changed when you moved a scenario control?", expanded=Tru
     else:
         st.write(plans[1].why_changed)
         st.caption("Every recommendation is recalculated from the visible fixture grid, recorded usable tyres, race condition, pit loss, weather assumption, tyre-degradation setting, traffic context, and track-position priority.")
+
+baseline_snapshot = st.session_state.get("baseline_snapshot")
+if baseline_snapshot:
+    st.divider()
+    st.subheader("Scenario Compare")
+    st.caption("Baseline is pinned locally for this browser session. Current controls remain editable; no scenario is shared or hosted.")
+    baseline_focus = baseline_snapshot.focus_driver
+    baseline_inputs = baseline_snapshot.inputs
+    identity, decision = st.columns([1, 2])
+    with identity:
+        st.markdown("**Baseline**")
+        st.write(focus_driver if baseline_focus == focus_driver else baseline_focus)
+        if baseline_focus != focus_driver:
+            st.caption(f"Current focus: {focus_driver}")
+    with decision:
+        st.markdown("**Decision difference**")
+        if current_snapshot is None:
+            st.error("Current configuration cannot generate a valid strategy. Correct tyre/condition selection to compare calls.", icon="⛔")
+        else:
+            changed_inputs = input_changes(baseline_inputs, current_snapshot.inputs)
+            if baseline_focus != focus_driver:
+                changed_inputs.insert(0, f"**Focus driver:** {baseline_focus} → {focus_driver}")
+            st.write(" · ".join(changed_inputs) if changed_inputs else "No visible assumptions changed from the baseline.")
+
+    if current_snapshot is not None:
+        with st.expander("Plan-by-plan difference", expanded=True):
+            baseline_plans = recommend_strategies(baseline_inputs)
+            compare_columns = st.columns(3)
+            for column, baseline_plan, current_plan in zip(compare_columns, baseline_plans, plans):
+                with column:
+                    st.markdown(f"<div class='plan-card'><div class='eyebrow'>{html.escape(current_plan.name)}</div></div>", unsafe_allow_html=True)
+                    for change in plan_changes(baseline_plan, current_plan):
+                        st.caption(f"• {change}")
 
 st.divider()
 st.warning(
