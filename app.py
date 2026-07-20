@@ -80,7 +80,7 @@ def plan_card(plan: StrategyPlan) -> None:
     for tradeoff in plan.tradeoffs:
         st.caption(f"• {tradeoff}")
     st.markdown("**Change trigger**")
-    st.info(plan.invalidating_trigger, icon="↻")
+    st.info(plan.invalidating_trigger, icon="🔄")
 
 
 brief = load_offline_race_brief()
