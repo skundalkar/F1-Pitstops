@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Local data, caches, and generated artifacts
+data/
+!data/.gitkeep
+cache/
+artifacts/
+*.duckdb
+*.sqlite
+
+# Streamlit
+.streamlit/secrets.toml
+
+# OS and editor files
+.DS_Store
+.idea/
+.vscode/
