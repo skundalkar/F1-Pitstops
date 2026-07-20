@@ -1,213 +1,186 @@
-"""Pitwall Planner — an explainable, local-first F1 strategy sandbox."""
+"""Personal Race Brief — a local, explainable F1 strategy sandbox."""
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import html
+import re
 
 import streamlit as st
 
-
-st.set_page_config(
-    page_title="Pitwall Planner",
-    page_icon="🏁",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+from data_sources import load_offline_race_brief
+from pitwall.strategy import StrategyInputs, StrategyPlan, recommend_strategies
 
 
-DRIVERS = {
-    "Max Verstappen": {"team": "Red Bull Racing", "pace": 9.5, "reliability": 0.96, "style": "Controls tyre life from the front"},
-    "Lando Norris": {"team": "McLaren", "pace": 9.1, "reliability": 0.94, "style": "Strong long-run pace"},
-    "Charles Leclerc": {"team": "Ferrari", "pace": 9.0, "reliability": 0.92, "style": "High one-lap peak"},
-    "Oscar Piastri": {"team": "McLaren", "pace": 8.9, "reliability": 0.94, "style": "Low-error tyre management"},
-    "George Russell": {"team": "Mercedes", "pace": 8.7, "reliability": 0.93, "style": "Adaptable in mixed conditions"},
-    "Lewis Hamilton": {"team": "Ferrari", "pace": 8.6, "reliability": 0.91, "style": "Patient in changing races"},
-    "Kimi Antonelli": {"team": "Mercedes", "pace": 8.1, "reliability": 0.90, "style": "Upside with traffic risk"},
-    "Fernando Alonso": {"team": "Aston Martin", "pace": 7.8, "reliability": 0.91, "style": "Often extracts alternate strategies"},
-}
+st.set_page_config(page_title="Pitwall Planner", page_icon="🏁", layout="wide", initial_sidebar_state="expanded")
 
-RACES = {
-    "British Grand Prix · Silverstone": {
-        "laps": 52,
-        "pit_loss": 20.8,
-        "degradation": "Medium-high",
-        "overtaking": "Good",
-        "default_grid": 4,
-        "brief": "Fast, loaded corners make rear-tyre life and a flexible second stop decisive.",
-    },
-    "Italian Grand Prix · Monza": {
-        "laps": 53,
-        "pit_loss": 23.5,
-        "degradation": "Low",
-        "overtaking": "Good",
-        "default_grid": 6,
-        "brief": "Track position matters, but low degradation rewards extending the first stint.",
-    },
-    "Singapore Grand Prix · Marina Bay": {
-        "laps": 62,
-        "pit_loss": 28.1,
-        "degradation": "High",
-        "overtaking": "Difficult",
-        "default_grid": 8,
-        "brief": "Heat, tyre wear, traffic and Safety Car probability make contingency plans essential.",
-    },
-}
+TEAM_TOKENS = ("#5E81AC", "#B48E5A", "#7A9E7E", "#9A6C91", "#6D8FA0", "#A5795B")
 
 
-def strategy_cards(grid: int, rain: int, safety_car: int, degradation: int) -> list[dict[str, object]]:
-    """Produce intentionally transparent heuristic recommendations for the prototype."""
-    wet_risk = rain >= 35
-    high_deg = degradation >= 65
-    sc_likely = safety_car >= 45
-    primary = "M → H" if not high_deg else "M → H → S"
-    primary_window = "L18–24" if not high_deg else "L14–18, then L34–39"
-    if wet_risk:
-        primary = "M → H / I (weather trigger)"
-        primary_window = "Protect track position; switch only when crossover is clear"
-    base = 58 + (10 if grid <= 5 else 0) - (5 if grid >= 12 else 0)
-    return [
-        {
-            "name": "Primary call", "tyres": primary, "window": primary_window,
-            "chance": min(82, base + 10), "tone": "best balance",
-            "why": "Balances tyre life with a pit window that avoids the busiest traffic.",
-            "risk": "Loses its advantage if the car rejoins in a train.",
-            "trigger": "Switch if tyre fall-off appears earlier than the planned window.",
-        },
-        {
-            "name": "Aggressive undercut", "tyres": "S → H" if not wet_risk else "S → I",
-            "window": "L11–15", "chance": min(72, base), "tone": "position upside",
-            "why": "Use only if clear air is available after the stop; the new-tyre pace can unlock an undercut.",
-            "risk": "A short first stint creates traffic and tyre-life exposure.",
-            "trigger": "Abandon it if the out-lap rejoins behind slower traffic.",
-        },
-        {
-            "name": "Safety Car hedge", "tyres": "M → H",
-            "window": "Wait for SC/VSC through L26" if sc_likely else "Do not wait beyond L25",
-            "chance": min(68, base - 3 + (8 if sc_likely else 0)), "tone": "event dependent",
-            "why": "Keeps a viable tyre set for a cheap stop if the race is neutralised.",
-            "risk": "Waiting too long sacrifices pace if the race stays green.",
-            "trigger": "Pit on the normal window if no neutralisation appears by lap 25.",
-        },
+def neutral_team_colour(team: str) -> str:
+    """Return a stable product colour, deliberately not a team's official livery colour."""
+    return TEAM_TOKENS[sum(ord(character) for character in team) % len(TEAM_TOKENS)]
+
+
+def initials(name: str) -> str:
+    return "".join(part[0] for part in name.split()[:2]).upper()
+
+
+def first_lap(window: str, fallback: int) -> int:
+    """Extract a display marker from an engine-owned pit-window string."""
+    match = re.search(r"lap\s+(\d+)", window, flags=re.IGNORECASE)
+    return int(match.group(1)) if match else fallback
+
+
+def plan_map(plans: tuple[StrategyPlan, ...], laps: int, focus_driver: str, team: str) -> str:
+    """Render an original schematic only; it is not circuit geometry or official artwork."""
+    colour = neutral_team_colour(team)
+    paths = ["M25 190 C30 60 180 42 275 96 S475 250 580 135 S745 35 830 100 C915 165 895 275 750 286 S530 342 395 278 S150 325 85 275 C42 242 24 220 25 190"]
+    y_positions = (82, 128, 174)
+    svg = [
+        "<svg viewBox='0 0 940 370' role='img' aria-label='Schematic race plan map' xmlns='http://www.w3.org/2000/svg'>",
+        "<rect width='940' height='370' rx='18' fill='#10182b'/>",
+        "<path d='" + paths[0] + "' fill='none' stroke='#344967' stroke-width='17' stroke-linecap='round'/>",
+        "<path d='" + paths[0] + "' fill='none' stroke='#8295ad' stroke-width='2' stroke-dasharray='7 8'/>",
+        "<text x='36' y='342' fill='#9fb0c7' font-family='sans-serif' font-size='13'>Original schematic · not to scale</text>",
+        "<text x='760' y='342' fill='#9fb0c7' font-family='sans-serif' font-size='13'>Race distance: " + str(laps) + " laps</text>",
     ]
+    for index, plan in enumerate(plans):
+        y = y_positions[index]
+        windows = [first_lap(window, 22 + index * 3) for window in plan.pit_windows]
+        markers = []
+        for marker_index, lap in enumerate(windows):
+            x = 145 + int(630 * min(lap, laps) / laps)
+            markers.append(
+                f"<circle cx='{x}' cy='{y}' r='10' fill='{colour}' stroke='#f5c451' stroke-width='3'/>"
+                f"<text x='{x}' y='{y + 4}' text-anchor='middle' fill='#0b1020' font-family='sans-serif' font-size='9' font-weight='700'>P{marker_index + 1}</text>"
+            )
+        svg.extend(
+            [
+                f"<line x1='128' y1='{y}' x2='825' y2='{y}' stroke='{colour}' stroke-width='3' opacity='{0.9 - index * 0.18}'/>",
+                f"<text x='36' y='{y + 5}' fill='#edf2f7' font-family='sans-serif' font-size='15' font-weight='700'>{html.escape(plan.name)}</text>",
+                *markers,
+            ]
+        )
+    svg.append(f"<circle cx='100' cy='128' r='16' fill='{colour}'/><text x='100' y='133' text-anchor='middle' fill='white' font-family='sans-serif' font-size='11' font-weight='700'>{html.escape(initials(focus_driver))}</text>")
+    svg.append("</svg>")
+    return "".join(svg)
 
 
-def driver_outlook(driver: str, grid: int, rain: int, degradation: int) -> tuple[str, str]:
-    profile = DRIVERS[driver]
-    modifier = (grid - 1) * 0.32 + degradation / 30 - rain / 55
-    expected = max(1, min(20, round(19 - profile["pace"] * 1.45 + modifier)))
-    spread = 3 + (1 if rain >= 35 else 0) + (1 if grid >= 10 else 0)
-    return f"P{expected}", f"Likely range P{max(1, expected - spread)}–P{min(20, expected + spread)}"
+def plan_text(plan: StrategyPlan) -> str:
+    stops = "; ".join(plan.pit_windows)
+    tyres = " → ".join(plan.tyre_stints)
+    return f"{plan.name}: {tyres}. Pit window: {stops}. Trigger: {plan.invalidating_trigger}"
 
+
+def plan_card(plan: StrategyPlan) -> None:
+    st.markdown(f"<div class='plan-card'><div class='eyebrow'>{html.escape(plan.name)}</div><div class='tyres'>{html.escape(' → '.join(plan.tyre_stints))}</div></div>", unsafe_allow_html=True)
+    st.markdown("**Pit window**  ")
+    st.write(" · ".join(plan.pit_windows))
+    st.markdown("**Trade-offs**")
+    for tradeoff in plan.tradeoffs:
+        st.caption(f"• {tradeoff}")
+    st.markdown("**Change trigger**")
+    st.info(plan.invalidating_trigger, icon="↻")
+
+
+brief = load_offline_race_brief()
+weekend = brief.weekend
+entries = {entry.driver: entry for entry in weekend.drivers}
+driver_names = list(entries)
 
 st.markdown(
     """<style>
     .stApp { background: #0b1020; color: #edf2f7; }
     [data-testid="stSidebar"] { background: #10182b; }
-    .eyebrow { color: #f5c451; font-size: .82rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
-    .hero { padding: 1.2rem 0 .45rem; }
-    .hero h1 { font-size: 2.5rem; margin: .15rem 0; }
-    .hero p { color: #b7c3d3; font-size: 1.08rem; max-width: 48rem; }
-    .metric-note { color: #9fb0c7; font-size: .83rem; }
-    .strategy-card { background: #151f35; border: 1px solid #273957; border-radius: 14px; padding: 1rem 1.1rem; min-height: 232px; }
-    .strategy-card h3 { margin: 0 0 .4rem; color: #f5c451; }
-    .strategy-card .tyres { font-size: 1.3rem; font-weight: 700; margin: .5rem 0; }
-    .strategy-card p { color: #bfcbdb; margin: .45rem 0; }
+    .eyebrow { color: #f5c451; font-size: .78rem; font-weight: 750; letter-spacing: .11em; text-transform: uppercase; }
+    .hero { padding: 1rem 0 .25rem; } .hero h1 { font-size: 2.45rem; margin: .15rem 0; }
+    .hero p { color: #b7c3d3; font-size: 1.05rem; max-width: 48rem; }
+    .identity { display:flex; align-items:center; gap:.75rem; margin:.4rem 0 1.1rem; }
+    .avatar { width:46px; height:46px; border-radius:50%; display:flex; align-items:center; justify-content:center; color:white; font-weight:800; }
+    .team-token { font-size:.82rem; color:#b7c3d3; }
+    .plan-card { background:#151f35; border:1px solid #273957; border-radius:14px; padding:1rem 1.1rem .8rem; min-height:88px; }
+    .tyres { font-size:1.22rem; font-weight:750; margin-top:.35rem; color:#edf2f7; }
+    .map-note { color:#9fb0c7; font-size:.86rem; }
     </style>""",
     unsafe_allow_html=True,
 )
 
 with st.sidebar:
     st.markdown("## 🏁 Pitwall Planner")
-    st.caption("Prototype · seed context only")
-    with st.expander("Build status", expanded=True):
-        st.progress(35, text="M1 · playable pre-race brief")
-        st.caption("✓ Offline seed profile")
-        st.caption("✓ Lineup and scenario controls")
-        st.caption("✓ Explainable plan comparison")
-        st.caption("Next: saved briefs and sourced historical replay")
-    race_name = st.selectbox("Race weekend", list(RACES))
+    st.caption("Personal Race Brief · local demo")
     st.divider()
     st.subheader("Your lineup")
-    lineup = st.multiselect(
-        "Choose up to five drivers",
-        list(DRIVERS),
-        default=["Lando Norris", "Charles Leclerc", "George Russell"],
-        max_selections=5,
-        help="This prototype uses illustrative driver profiles, not live championship data.",
-    )
-    grid = st.slider("Typical grid position", 1, 20, RACES[race_name]["default_grid"])
+    lineup = st.multiselect("Choose up to five fixture drivers", driver_names, default=driver_names[:3], max_selections=5)
+    if not lineup:
+        st.info("Choose a driver to build a brief.")
+        st.stop()
+    focus_driver = st.selectbox("Focus driver", lineup)
+    focus = entries[focus_driver]
+    st.caption(f"Fixture grid: P{focus.grid_position} · {focus.team}")
     st.divider()
-    st.subheader("Race assumptions")
-    rain = st.slider("Rain probability", 0, 100, 25, format="%d%%")
-    safety_car = st.slider("Safety Car probability", 0, 100, 35, format="%d%%")
-    degradation = st.slider("Tyre degradation", 0, 100, 55, help="0 = very low, 100 = very high")
+    st.subheader("Race context")
+    traffic_label = st.selectbox("Expected traffic after a stop", ("Traffic ahead", "Neutral release", "Clean air"))
+    traffic_context = {"Traffic ahead": "traffic", "Neutral release": "neutral", "Clean air": "clean_air"}[traffic_label]
+    degradation = st.select_slider("Tyre degradation", options=("low", "medium", "high"), value="medium")
+    track_position = st.slider("Value track position", 0, 100, 55, format="%d%%")
+    safety_car = st.slider("Safety Car chance", 0, 100, 35, format="%d%%")
+    rain = st.slider("Rain likelihood", 0, 100, int(weekend.weather.rain_probability * 100), format="%d%%")
 
-race = RACES[race_name]
-now = datetime.now(timezone.utc).strftime("%d %b %Y, %H:%M UTC")
-st.markdown('<div class="hero"><div class="eyebrow">Pre-race strategy brief</div><h1>Pitwall Planner</h1><p>Build a lineup, test the assumptions, and see the decision triggers—not a false promise of certainty.</p></div>', unsafe_allow_html=True)
+inputs = StrategyInputs(
+    degradation=degradation,
+    safety_car_chance=safety_car / 100,
+    rain_likelihood=rain / 100,
+    pit_loss_seconds=weekend.pit_lane_loss_seconds,
+    track_position_emphasis=track_position / 100,
+    grid_position=focus.grid_position,
+    traffic_context=traffic_context,
+)
+plans = recommend_strategies(inputs)
+team_colour = neutral_team_colour(focus.team)
 
-top_left, top_mid, top_right, top_last = st.columns(4)
-top_left.metric("Race distance", f"{race['laps']} laps")
-top_mid.metric("Pit-lane time loss", f"{race['pit_loss']}s")
-top_right.metric("Tyre wear", race["degradation"])
-top_last.metric("Overtaking", race["overtaking"])
-st.caption(f"Data status: illustrative seed profile · last refreshed {now} · live timing is not connected.")
+st.markdown("<div class='hero'><div class='eyebrow'>Personal race brief</div><h1>Make the call. Understand the risk.</h1><p>Compare transparent pre-race plans for your selected driver, then see exactly what would make the pitwall change its mind.</p></div>", unsafe_allow_html=True)
+st.markdown(
+    f"<div class='identity'><div class='avatar' style='background:{team_colour}'>{initials(focus_driver)}</div>"
+    f"<div><b>{html.escape(focus_driver)}</b><br><span class='team-token'>{html.escape(focus.team)} · fixture grid P{focus.grid_position} · identity shown as neutral product colour, not team branding</span></div></div>",
+    unsafe_allow_html=True,
+)
 
-brief_col, risk_col = st.columns([2, 1])
-with brief_col:
-    st.subheader(race_name)
-    st.write(race["brief"])
-with risk_col:
+metrics = st.columns(5)
+metrics[0].metric("Race distance", f"{weekend.laps} laps")
+metrics[1].metric("Pit-lane loss", f"{weekend.pit_lane_loss_seconds:.1f}s")
+metrics[2].metric("Air / track", f"{weekend.weather.air_temperature_c:.0f}° / {weekend.weather.track_temperature_c or '—'}°C")
+metrics[3].metric("Forecast rain", f"{rain}%")
+metrics[4].metric("Traffic", traffic_label)
+st.caption(f"{brief.freshness.label} · {brief.freshness.detail} · As of {brief.freshness.as_of:%d %b %Y}.")
+
+intro, read = st.columns([2, 1])
+with intro:
+    st.subheader(f"{weekend.event_name} · {weekend.circuit_name}")
+    st.write(f"Your plan is anchored to the fixture grid and a {weekend.pit_lane_loss_seconds:.1f}s green-flag pit loss. Adjust assumptions in the sidebar to replan.")
+with read:
     st.subheader("Pitwall read")
-    if rain >= 35:
-        st.warning("Weather crossover is a live decision. Do not commit to intermediates from this forecast alone.")
-    elif degradation >= 65:
-        st.warning("High degradation: protect a second-stop option and avoid trapping the lineup in traffic.")
-    else:
-        st.info("Dry baseline: choose a plan with clear-air triggers rather than chasing every early stop.")
+    st.write(plans[1].why_changed)
 
 st.divider()
-st.subheader("Lineup outlook")
-if not lineup:
-    st.info("Choose at least one driver in the sidebar to build a strategy brief.")
-else:
-    columns = st.columns(min(len(lineup), 5))
-    for column, driver in zip(columns, lineup):
-        expected, range_text = driver_outlook(driver, grid, rain, degradation)
-        profile = DRIVERS[driver]
-        with column:
-            st.markdown(f"**{driver}**")
-            st.caption(profile["team"])
-            st.metric("Expected finish", expected, range_text)
-            st.caption(profile["style"])
+st.subheader("Race Plan Map")
+st.caption("A simplified product schematic for comparing pit timing. It is original artwork, not circuit geometry, a logo, or an official graphic.")
+st.markdown(plan_map(plans, weekend.laps, focus_driver, focus.team), unsafe_allow_html=True)
+with st.expander("Text equivalent of the map", expanded=False):
+    st.markdown("\n\n".join(f"- {plan_text(plan)}" for plan in plans))
 
 st.divider()
-st.subheader("Strategy board")
-st.caption("Heuristic prototype: probabilities are confidence in the plan’s suitability, not probabilities of winning.")
-cards = strategy_cards(grid, rain, safety_car, degradation)
-for column, card in zip(st.columns(3), cards):
+st.subheader("Plan comparison")
+st.caption("These are rule-based trade-offs. No plan is presented as a certainty or a win probability.")
+for column, plan in zip(st.columns(3), plans):
     with column:
-        st.markdown(
-            f"<div class='strategy-card'><h3>{card['name']}</h3><span class='eyebrow'>{card['tone']}</span>"
-            f"<div class='tyres'>{card['tyres']}</div><p><b>Pit window:</b> {card['window']}</p>"
-            f"<p>{card['why']}</p><p><b>Risk:</b> {card['risk']}</p>"
-            f"<p><b>Change trigger:</b> {card['trigger']}</p></div>",
-            unsafe_allow_html=True,
-        )
-        st.progress(int(card["chance"]), text=f"Plan suitability: {card['chance']}%")
+        plan_card(plan)
 
-with st.expander("What would change this recommendation?"):
-    st.markdown(
-        "- **Rain begins sooner:** keep tyre temperature and crossover evidence ahead of the forecast.\n"
-        "- **Virtual/Safety Car:** recalculate pit loss before committing; a cheap stop can reverse the order.\n"
-        "- **Unexpected degradation:** shorten the stint only if the new tyre will have clear air to deliver its advantage.\n"
-        "- **Rival pits:** compare their out-lap pace with your traffic cost, not the pit event in isolation."
-    )
+with st.expander("What changed when you moved a scenario control?", expanded=True):
+    st.write(plans[1].why_changed)
+    st.caption("Every recommendation is recalculated from the visible fixture grid, pit loss, weather assumption, tyre-degradation setting, traffic context, and track-position priority.")
 
 st.divider()
 st.warning(
-    "Strategy simulator — educational estimate, not official team strategy. "
-    "Recommendations use public data and scenario assumptions; live race events, tyre condition, "
-    "traffic, and team information can materially change the optimal call."
+    "Strategy simulator — educational estimate, not official team strategy. Recommendations use public-data-oriented fixtures and scenario assumptions; live race events, tyre condition, traffic, and team information can materially change the optimal call."
 )
-st.caption("Pitwall Planner is an enthusiast decision-support prototype. It does not use official F1 timing, live weather, or a predictive race model yet.")
+st.caption("No driver portraits, team logos, liveries, or official F1 artwork are bundled. Optional reusable assets will require source and license attribution before use.")
