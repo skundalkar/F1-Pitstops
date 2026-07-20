@@ -33,6 +33,23 @@ class StrategyRecommendationTests(unittest.TestCase):
             StrategyInputs(safety_car_chance=1.1)
         with self.assertRaises(ValueError):
             StrategyInputs(pit_loss_seconds=0)
+        with self.assertRaises(ValueError):
+            StrategyInputs(grid_position=21)
+        with self.assertRaises(ValueError):
+            StrategyInputs(traffic_context="jammed")
+
+    def test_traffic_and_grid_position_change_aggressive_call(self) -> None:
+        clear_air = recommend_strategies(
+            StrategyInputs(grid_position=3, traffic_context="clean_air")
+        )[2]
+        traffic = recommend_strategies(
+            StrategyInputs(grid_position=16, traffic_context="traffic")
+        )[2]
+
+        self.assertIn("late end", clear_air.pit_windows[0])
+        self.assertIn("early end", traffic.pit_windows[0])
+        self.assertIn("starting P3", clear_air.why_changed)
+        self.assertIn("starting P16", traffic.why_changed)
 
 
 if __name__ == "__main__":
