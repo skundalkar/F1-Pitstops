@@ -15,6 +15,10 @@ from pitwall.strategy import StrategyInputs, StrategyPlan, recommend_strategies
 st.set_page_config(page_title="Pitwall Planner", page_icon="🏁", layout="wide", initial_sidebar_state="expanded")
 
 TEAM_TOKENS = ("#5E81AC", "#B48E5A", "#7A9E7E", "#9A6C91", "#6D8FA0", "#A5795B")
+EDUCATIONAL_DISCLAIMER = (
+    "Strategy simulator — educational estimate, not official team strategy. "
+    "Recommendations use public-data-oriented fixtures and scenario assumptions; live race events, tyre condition, traffic, and team information can materially change the optimal call."
+)
 
 
 def neutral_team_colour(team: str) -> str:
@@ -199,10 +203,15 @@ with st.sidebar:
     rain = st.slider("Rain likelihood", 0, 100, int(weekend.weather.rain_probability * 100), format="%d%%")
 
 condition_compounds = {"dry": {"Soft", "Medium", "Hard"}, "wet": {"Intermediate", "Wet"}}
+effective_condition = (
+    "wet"
+    if race_condition == "wet" or (race_condition == "auto" and rain / 100 >= 0.45)
+    else "dry"
+)
 configuration_issue = (
-    f"The fixture lists no {condition_label.lower()}-condition starting tyre for {focus_driver}. "
-    "Choose Auto/Dry or use a fixture with recorded Intermediate or Wet tyres."
-    if race_condition in condition_compounds and starting_compound not in condition_compounds[race_condition]
+    f"The current {condition_label} scenario requires a {effective_condition}-condition starting tyre for {focus_driver}. "
+    "Choose a compatible tyre or use a fixture with recorded Intermediate or Wet tyres."
+    if starting_compound not in condition_compounds[effective_condition]
     else None
 )
 if configuration_issue:
@@ -227,6 +236,11 @@ else:
         lineup=tuple(lineup),
         focus_driver=focus_driver,
         inputs=inputs,
+        data_mode=weekend.data_mode,
+        source_label=brief.freshness.label,
+        source_detail=brief.freshness.detail,
+        as_of=brief.freshness.as_of.isoformat(),
+        disclaimer=EDUCATIONAL_DISCLAIMER,
     )
 team_colour = neutral_team_colour(focus.team)
 
@@ -335,6 +349,6 @@ if baseline_snapshot:
 
 st.divider()
 st.warning(
-    "Strategy simulator — educational estimate, not official team strategy. Recommendations use public-data-oriented fixtures and scenario assumptions; live race events, tyre condition, traffic, and team information can materially change the optimal call."
+    EDUCATIONAL_DISCLAIMER
 )
 st.caption("No driver portraits, team logos, liveries, or official F1 artwork are bundled. Optional reusable assets will require source and license attribution before use.")

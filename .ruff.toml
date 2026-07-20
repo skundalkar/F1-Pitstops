@@ -1,0 +1,7 @@
+target-version = "py311"
+
+[lint.per-file-ignores]
+# Existing production code is intentionally outside this release-engineering
+# slice. Keep the gate strict for new files while tracking this legacy import
+# cleanup separately from CI infrastructure work.
+"data_sources/seed.py" = ["F401"]
