@@ -1,0 +1,22 @@
+{
+  "season": 2026,
+  "round_number": 1,
+  "event_name": "Pitwall Demo Grand Prix",
+  "circuit_name": "Silverstone Circuit",
+  "laps": 52,
+  "pit_lane_loss_seconds": 20.5,
+  "weather": {
+    "air_temperature_c": 19.0,
+    "track_temperature_c": 27.0,
+    "rain_probability": 0.25,
+    "wind_speed_kph": 18.0,
+    "source": "bundled-demo"
+  },
+  "drivers": [
+    {"driver": "Lando Norris", "team": "McLaren", "grid_position": 1, "available_compounds": ["soft", "medium", "hard"]},
+    {"driver": "Charles Leclerc", "team": "Ferrari", "grid_position": 2, "available_compounds": ["soft", "medium", "hard"]},
+    {"driver": "George Russell", "team": "Mercedes", "grid_position": 3, "available_compounds": ["soft", "medium", "hard"]},
+    {"driver": "Max Verstappen", "team": "Red Bull Racing", "grid_position": 4, "available_compounds": ["soft", "medium", "hard"]},
+    {"driver": "Oscar Piastri", "team": "McLaren", "grid_position": 5, "available_compounds": ["soft", "medium", "hard"]}
+  ]
+}
