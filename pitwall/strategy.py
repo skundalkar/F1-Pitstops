@@ -7,7 +7,7 @@ better calibrated models as the project gains data.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 
 @dataclass(frozen=True)
@@ -26,6 +26,9 @@ class StrategyInputs:
     track_position_emphasis: float = 0.50
     grid_position: int = 10
     traffic_context: str = "neutral"
+    race_condition: str = "auto"
+    starting_compound: str = "Medium"
+    usable_compounds: tuple[str, ...] = ("Soft", "Medium", "Hard", "Intermediate", "Wet")
 
     def __post_init__(self) -> None:
         if self.degradation not in {"low", "medium", "high"}:
@@ -43,6 +46,21 @@ class StrategyInputs:
             raise ValueError("grid_position must be between 1 and 20")
         if self.traffic_context not in {"traffic", "neutral", "clean_air"}:
             raise ValueError("traffic_context must be traffic, neutral, or clean_air")
+        if self.race_condition not in {"auto", "dry", "wet"}:
+            raise ValueError("race_condition must be auto, dry, or wet")
+        if self.starting_compound not in _ALL_COMPOUNDS:
+            raise ValueError("starting_compound is not recognised")
+        if not self.usable_compounds:
+            raise ValueError("usable_compounds must not be empty")
+        if len(set(self.usable_compounds)) != len(self.usable_compounds):
+            raise ValueError("usable_compounds must not contain duplicates")
+        if any(compound not in _ALL_COMPOUNDS for compound in self.usable_compounds):
+            raise ValueError("usable_compounds contains an unrecognised compound")
+        if self.starting_compound not in self.usable_compounds:
+            raise ValueError("starting_compound must be included in usable_compounds")
+        # JSON snapshots naturally decode tuples as lists; retain an immutable,
+        # deterministic representation at the model boundary.
+        object.__setattr__(self, "usable_compounds", tuple(self.usable_compounds))
 
 
 @dataclass(frozen=True)
@@ -55,16 +73,31 @@ class StrategyPlan:
     tradeoffs: tuple[str, ...]
     invalidating_trigger: str
     why_changed: str
+    is_feasible: bool = True
+    feasibility_note: str = ""
+    feasible_alternative: str = ""
+
+
+_DRY_COMPOUNDS = frozenset({"Soft", "Medium", "Hard"})
+_WET_COMPOUNDS = frozenset({"Intermediate", "Wet"})
+_ALL_COMPOUNDS = _DRY_COMPOUNDS | _WET_COMPOUNDS
 
 
 def recommend_strategies(inputs: StrategyInputs) -> tuple[StrategyPlan, ...]:
     """Return conservative, balanced, and aggressive plans in that order."""
 
-    wet = inputs.rain_likelihood >= 0.45
-    conservative = _conservative(inputs, wet)
-    balanced = _balanced(inputs, wet)
-    aggressive = _aggressive(inputs, wet)
-    return conservative, balanced, aggressive
+    wet = _is_wet(inputs)
+    effective_inputs = _effective_inputs(inputs, wet)
+    _validate_starting_condition(effective_inputs, wet)
+    candidates = (
+        _conservative(effective_inputs, wet),
+        _balanced(effective_inputs, wet),
+        _aggressive(effective_inputs, wet),
+    )
+    candidates = tuple(
+        _start_on_selected_compound(plan, effective_inputs.starting_compound) for plan in candidates
+    )
+    return tuple(_assess_feasibility(plan, effective_inputs, wet) for plan in candidates)
 
 
 def _conservative(inputs: StrategyInputs, wet: bool) -> StrategyPlan:
@@ -171,6 +204,71 @@ def _why_changed(inputs: StrategyInputs, style: str, wet: bool) -> str:
     elif style == "aggressive":
         reasons.append("the aggressive option still assumes clear air can unlock an undercut")
     return "; ".join(reasons) + "."
+
+
+def _is_wet(inputs: StrategyInputs) -> bool:
+    if inputs.race_condition == "wet":
+        return True
+    if inputs.race_condition == "dry":
+        return False
+    return inputs.rain_likelihood >= 0.45
+
+
+def _validate_starting_condition(inputs: StrategyInputs, wet: bool) -> None:
+    allowed = _WET_COMPOUNDS if wet else _DRY_COMPOUNDS
+    if inputs.starting_compound not in allowed:
+        condition = "wet" if wet else "dry"
+        raise ValueError(f"{inputs.starting_compound} cannot start a {condition} strategy")
+
+
+def _effective_inputs(inputs: StrategyInputs, wet: bool) -> StrategyInputs:
+    """Preserve legacy automatic wet recommendations without hiding explicit choices.
+
+    Before explicit race condition and starting-tyre inputs existed, a high rain
+    likelihood meant an intermediate-start baseline. Keep that behaviour only
+    for the all-default automatic start; a user-specified condition remains
+    strict and therefore cannot silently change their fitted compound.
+    """
+    if wet and inputs.race_condition == "auto" and inputs.starting_compound == "Medium":
+        return replace(inputs, starting_compound="Intermediate")
+    return inputs
+
+
+def _start_on_selected_compound(plan: StrategyPlan, starting_compound: str) -> StrategyPlan:
+    """Bind a generic plan to the tyre the user says is fitted at lights out."""
+    return replace(plan, tyre_stints=(starting_compound, *plan.tyre_stints[1:]))
+
+
+def _assess_feasibility(plan: StrategyPlan, inputs: StrategyInputs, wet: bool) -> StrategyPlan:
+    allowed = _WET_COMPOUNDS if wet else _DRY_COMPOUNDS
+    incompatible = [
+        compound for compound in plan.tyre_stints
+        if compound not in allowed or compound not in inputs.usable_compounds
+    ]
+    if not incompatible:
+        return plan
+    missing = ", ".join(dict.fromkeys(incompatible))
+    alternative = _feasible_alternative(inputs, wet, len(plan.tyre_stints))
+    return replace(
+        plan,
+        tyre_stints=(),
+        pit_windows=(),
+        is_feasible=False,
+        feasibility_note=(
+            f"Not shown: this {plan.name.lower()} sequence requires unavailable or "
+            f"condition-incompatible compound(s): {missing}."
+        ),
+        feasible_alternative=alternative,
+    )
+
+
+def _feasible_alternative(inputs: StrategyInputs, wet: bool, stint_count: int) -> str:
+    allowed = _WET_COMPOUNDS if wet else _DRY_COMPOUNDS
+    available = [compound for compound in inputs.usable_compounds if compound in allowed]
+    # Starting compound is always usable; select a distinct compound when possible.
+    follow_on = next((compound for compound in available if compound != inputs.starting_compound), inputs.starting_compound)
+    stints = (inputs.starting_compound,) + (follow_on,) * (stint_count - 1)
+    return f"Feasible alternative: {' → '.join(stints)}."
 
 
 def _window(base_window: str, inputs: StrategyInputs, aggressive: bool) -> str:

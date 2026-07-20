@@ -51,6 +51,39 @@ class StrategyRecommendationTests(unittest.TestCase):
         self.assertIn("starting P3", clear_air.why_changed)
         self.assertIn("starting P16", traffic.why_changed)
 
+    def test_explicit_dry_condition_and_starting_compound_bind_all_plans(self) -> None:
+        plans = recommend_strategies(
+            StrategyInputs(
+                race_condition="dry",
+                starting_compound="Soft",
+                usable_compounds=("Soft", "Medium", "Hard"),
+            )
+        )
+
+        self.assertTrue(all(plan.is_feasible for plan in plans))
+        self.assertTrue(all(plan.tyre_stints[0] == "Soft" for plan in plans))
+
+    def test_unavailable_compound_yields_explanation_and_feasible_alternative(self) -> None:
+        plans = recommend_strategies(
+            StrategyInputs(
+                race_condition="dry",
+                starting_compound="Medium",
+                usable_compounds=("Soft", "Medium"),
+            )
+        )
+        conservative = plans[0]
+
+        self.assertFalse(conservative.is_feasible)
+        self.assertEqual(conservative.tyre_stints, ())
+        self.assertIn("Hard", conservative.feasibility_note)
+        self.assertEqual(conservative.feasible_alternative, "Feasible alternative: Medium → Soft.")
+
+    def test_rejects_start_compound_incompatible_with_explicit_condition(self) -> None:
+        with self.assertRaisesRegex(ValueError, "cannot start a dry"):
+            recommend_strategies(
+                StrategyInputs(race_condition="dry", starting_compound="Intermediate")
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
