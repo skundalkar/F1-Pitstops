@@ -7,6 +7,7 @@ their responses into these models before the rest of the product sees them.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 from typing import Protocol
 
@@ -51,6 +52,35 @@ class RaceWeekend:
     drivers: tuple[DriverGridEntry, ...]
     weather: WeatherSnapshot
     data_mode: str
+
+
+@dataclass(frozen=True)
+class DataProvenance:
+    """Where a displayed brief came from, so it cannot be mistaken for live data."""
+
+    provider: str
+    dataset: str
+    source_url: str | None
+    retrieved_at: datetime
+    is_live: bool
+
+
+@dataclass(frozen=True)
+class DataFreshness:
+    """Human-readable freshness state intended for direct UI display."""
+
+    label: str
+    detail: str
+    as_of: datetime
+
+
+@dataclass(frozen=True)
+class RaceBrief:
+    """The complete typed payload an app page needs for a race briefing."""
+
+    weekend: RaceWeekend
+    provenance: DataProvenance
+    freshness: DataFreshness
 
 
 class WeekendSource(Protocol):

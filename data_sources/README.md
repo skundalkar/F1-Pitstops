@@ -2,6 +2,11 @@
 
 The app defaults to [`fixtures/sample_race_weekend.json`](fixtures/sample_race_weekend.json), a deterministic offline demo. It is illustrative, not historical F1 data, and is deliberately small so local development does not trigger bulk downloads.
 
+`load_offline_race_brief()` is the application-facing entry point. It returns a
+typed `RaceBrief` containing the weekend, its provenance, and a visible
+freshness label. Invalid or incomplete fixture files raise `SeedFixtureError`
+with a field-specific message instead of leaking an implementation `KeyError`.
+
 Provider adapters are boundary stubs only:
 
 | Provider | Intended use | Activation rule |
